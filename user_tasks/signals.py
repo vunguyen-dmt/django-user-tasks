@@ -5,6 +5,7 @@ Celery signal handlers and custom Django signal.
 import logging
 from uuid import uuid4
 
+from celery import current_app as celery_app
 from celery.signals import before_task_publish, task_failure, task_prerun, task_retry, task_success
 
 from django.contrib.auth import get_user_model
