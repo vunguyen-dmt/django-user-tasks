@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 @before_task_publish.connect
-def create_user_task(sender=None, body=None, **kwargs):
+def create_user_task(sender=None, body=None, headers=None, **kwargs):
     """
     Create a :py:class:`UserTaskStatus` record for each :py:class:`UserTaskMixin`.
 
@@ -35,29 +35,31 @@ def create_user_task(sender=None, body=None, **kwargs):
         return
 
     if isinstance(body, tuple):
-        body = proto2_to_proto1(body, {})
+        body = proto2_to_proto1(body, headers or {})
 
-    if issubclass(task_class.__class__, UserTaskMixin):
-        arguments_dict = task_class.arguments_as_dict(*body['args'], **body['kwargs'])
-        user_id = _get_user_id(arguments_dict)
-        task_id = body['id']
-        if body.get('callbacks', []):
-            _create_chain_entry(user_id, task_id, task_class, body['args'], body['kwargs'], body['callbacks'])
-            return
-        if body.get('chord', None):
-            _create_chord_entry(task_id, task_class, body, user_id)
-            return
-        parent = _get_or_create_group_parent(body, user_id)
-        name = task_class.generate_name(arguments_dict)
-        total_steps = task_class.calculate_total_steps(arguments_dict)
-        UserTaskStatus.objects.get_or_create(
-            task_id=task_id, defaults={'user_id': user_id, 'parent': parent, 'name': name, 'task_class': sender,
-                                       'total_steps': total_steps})
-        if parent:
-            parent.increment_total_steps(total_steps)
+    if not issubclass(task_class.__class__, UserTaskMixin):
+        return
+
+    arguments_dict = task_class.arguments_as_dict(*body['args'], **body['kwargs'])
+    user_id = _get_user_id(arguments_dict)
+    task_id = body['id']
+    if body.get('callbacks', []):
+        _create_chain_entry(user_id, task_id, task_class, body['args'], body['kwargs'], body['callbacks'])
+        return
+    if body.get('chord', None):
+        _create_chord_entry(task_id, task_class, body, user_id)
+        return
+    parent = _get_or_create_group_parent(body, user_id)
+    name = task_class.generate_name(arguments_dict)
+    total_steps = task_class.calculate_total_steps(arguments_dict)
+    UserTaskStatus.objects.get_or_create(
+        task_id=task_id, defaults={'user_id': user_id, 'parent': parent, 'name': name, 'task_class': sender,
+                                    'total_steps': total_steps})
+    if parent:
+        parent.increment_total_steps(total_steps)
 
 
-def proto2_to_proto1(body):
+def proto2_to_proto1(body, headers):
     """
     Convert a protocol v2 task body and headers to protocol v1 format.
     """
