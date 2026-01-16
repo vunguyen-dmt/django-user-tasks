@@ -16,6 +16,7 @@ from user_tasks import user_task_stopped
 from .exceptions import TaskCanceledException
 from .models import UserTaskStatus
 from .tasks import UserTaskMixin
+from celery import chain
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ def create_user_task(sender=None, body=None, **kwargs):
         task_class = import_string(sender)
     except ImportError:
         return
+
+    if isinstance(body, tuple):
+        body = proto2_to_proto1(body, {})
+
     if issubclass(task_class.__class__, UserTaskMixin):
         arguments_dict = task_class.arguments_as_dict(*body['args'], **body['kwargs'])
         user_id = _get_user_id(arguments_dict)
@@ -51,6 +56,49 @@ def create_user_task(sender=None, body=None, **kwargs):
         if parent:
             parent.increment_total_steps(total_steps)
 
+
+def proto2_to_proto1(body):
+    """
+    Convert a protocol v2 task body and headers to protocol v1 format.
+    """
+    args, kwargs, embed = body
+    embedded = extract_proto2_embed(**embed)
+    chained = embedded.pop("chain", None)
+    new_body = dict(
+        extract_proto2_headers(**headers),
+        args=args,
+        kwargs=kwargs,
+        **embedded,
+    )
+    if chained:
+        new_body["callbacks"].append(chain(chained))
+    return new_body
+
+def extract_proto2_headers(id, retries, eta, expires, group, timelimit, task, **_):  # pylint: disable=redefined-builtin
+    """
+    Extract relevant headers from protocol v2 format.
+    """
+    return {
+        "id": id,
+        "task": task,
+        "retries": retries,
+        "eta": eta,
+        "expires": expires,
+        "utc": True,
+        "taskset": group,
+        "timelimit": timelimit,
+    }
+
+def extract_proto2_embed(callbacks=None, errbacks=None, task_chain=None, chord=None, **_):
+    """
+    Extract embedded task metadata.
+    """
+    return {
+        "callbacks": callbacks or [],
+        "errbacks": errbacks or [],
+        "chain": task_chain,
+        "chord": chord,
+    }
 
 def _create_chain_entry(user_id, task_id, task_class, args, kwargs, callbacks, parent=None):
     """
