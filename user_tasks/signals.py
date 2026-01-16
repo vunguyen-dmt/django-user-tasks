@@ -16,7 +16,7 @@ from user_tasks import user_task_stopped
 from .exceptions import TaskCanceledException
 from .models import UserTaskStatus
 from .tasks import UserTaskMixin
-from celery import chain
+from .utils import proto2_to_proto1
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,13 +28,15 @@ def create_user_task(sender=None, body=None, headers=None, **kwargs):
 
     Also creates a :py:class:`UserTaskStatus` for each chain, chord, or group containing
     the new :py:class:`UserTaskMixin`.
+
+    Supports Celery protocol v1 and v2.
     """
     try:
         task_class = import_string(sender)
     except ImportError:
         return
 
-    if isinstance(body, tuple):
+    if celery_app.conf.task_protocol == 2 and isinstance(body, tuple):
         body = proto2_to_proto1(body, headers or {})
 
     if not issubclass(task_class.__class__, UserTaskMixin):
@@ -54,53 +56,10 @@ def create_user_task(sender=None, body=None, headers=None, **kwargs):
     total_steps = task_class.calculate_total_steps(arguments_dict)
     UserTaskStatus.objects.get_or_create(
         task_id=task_id, defaults={'user_id': user_id, 'parent': parent, 'name': name, 'task_class': sender,
-                                    'total_steps': total_steps})
+                                   'total_steps': total_steps})
     if parent:
         parent.increment_total_steps(total_steps)
 
-
-def proto2_to_proto1(body, headers):
-    """
-    Convert a protocol v2 task body and headers to protocol v1 format.
-    """
-    args, kwargs, embed = body
-    embedded = extract_proto2_embed(**embed)
-    chained = embedded.pop("chain", None)
-    new_body = dict(
-        extract_proto2_headers(**headers),
-        args=args,
-        kwargs=kwargs,
-        **embedded,
-    )
-    if chained:
-        new_body["callbacks"].append(chain(chained))
-    return new_body
-
-def extract_proto2_headers(id, retries, eta, expires, group, timelimit, task, **_):  # pylint: disable=redefined-builtin
-    """
-    Extract relevant headers from protocol v2 format.
-    """
-    return {
-        "id": id,
-        "task": task,
-        "retries": retries,
-        "eta": eta,
-        "expires": expires,
-        "utc": True,
-        "taskset": group,
-        "timelimit": timelimit,
-    }
-
-def extract_proto2_embed(callbacks=None, errbacks=None, task_chain=None, chord=None, **_):
-    """
-    Extract embedded task metadata.
-    """
-    return {
-        "callbacks": callbacks or [],
-        "errbacks": errbacks or [],
-        "chain": task_chain,
-        "chord": chord,
-    }
 
 def _create_chain_entry(user_id, task_id, task_class, args, kwargs, callbacks, parent=None):
     """
